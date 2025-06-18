@@ -1,0 +1,13 @@
+[package]
+name = "rust_factors"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_factors"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module"] }
+numpy = "0.20"         # Optional, for numpy interop
+polars = { version = "0.37", features = ["ndarray"] }  # Optional
