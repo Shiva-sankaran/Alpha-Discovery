@@ -9,8 +9,9 @@ import warnings
 import sys
 sys.path.append('./strategy_cpp/build')
 import strategy_cpp
+from rust_factors import compute_all_factors
 warnings.filterwarnings('ignore')
-
+from sdk.factor_dataset import FactorDataset
 
 """ This code was commented and cleaned by claude.ai"""
 
@@ -32,48 +33,33 @@ class AlphaFactorAnalysis:
         self.lookback_window = lookback_window
         self.forward_return_period = forward_return_period
         self.scaler = StandardScaler()
-        
-    def generate_technical_factors(self, data):
+
+    def generate_technical_factors(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate technical analysis factors from price and volume data
+        Use Rust backend to compute technical factors
         """
-        df = data.copy()
+        required_cols = {"close", "volume"}
+        if not required_cols.issubset(set(data.columns)):
+            raise ValueError(f"Missing required columns: {required_cols - set(data.columns)}")
+
+        try:
+            # Ensure correct dtypes for Rust FFI
+            close = data["close"].values.astype(np.float64)
+            volume = data["volume"].values.astype(np.float64)
+
+            # Call Rust function
+            factors_dict = compute_all_factors(close, volume)
+
+            # Convert result into DataFrame
+            factors_df = pd.DataFrame(factors_dict, index=data.index)
+
+            # Combine with original DataFrame (non-destructive)
+            return pd.concat([data, factors_df], axis=1)
+
+        except Exception as e:
+            print(f"[Rust Factor Generation Error] {e}")
+            return data
         
-        # Price-based factors
-        df['returns'] = df['close'].pct_change()
-        df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
-        
-        # Momentum factors
-        for period in [5, 10, 20, 60]:
-            df[f'momentum_{period}'] = df['close'] / df['close'].shift(period) - 1
-            df[f'rsi_{period}'] = self._calculate_rsi(df['close'], period)
-        
-        # Volatility factors
-        for period in [5, 10, 20]:
-            df[f'volatility_{period}'] = df['returns'].rolling(period).std()
-            df[f'realized_vol_{period}'] = np.sqrt(252) * df['returns'].rolling(period).std()
-        
-        # Volume factors
-        df['volume_ma_ratio_10'] = df['volume'] / df['volume'].rolling(10).mean()
-        df['volume_ma_ratio_20'] = df['volume'] / df['volume'].rolling(20).mean()
-        df['price_volume_trend'] = ((df['close'] - df['close'].shift(1)) / df['close'].shift(1)) * df['volume']
-        
-        # Microstructure factors
-        df['high_low_ratio'] = (df['high'] - df['low']) / df['close']
-        df['open_close_ratio'] = (df['close'] - df['open']) / df['open']
-        df['upper_shadow'] = (df['high'] - np.maximum(df['open'], df['close'])) / df['close']
-        df['lower_shadow'] = (np.minimum(df['open'], df['close']) - df['low']) / df['close']
-        
-        # Mean reversion factors
-        for period in [10, 20, 50]:
-            df[f'mean_reversion_{period}'] = (df['close'] - df['close'].rolling(period).mean()) / df['close'].rolling(period).std()
-        
-        # Trend strength factors
-        for period in [10, 20]:
-            df[f'trend_strength_{period}'] = self._calculate_trend_strength(df['close'], period)
-        
-        return df
-    
     def _calculate_rsi(self, prices, period=14):
         """Calculate Relative Strength Index"""
         delta = prices.diff()
@@ -128,66 +114,7 @@ class AlphaFactorAnalysis:
                 'quintile_long_short': [0.0] * len(actual_returns),
                 'percentile_long_short': [0.0] * len(actual_returns)
             }
-    # def calculate_strategy_returns_fixed(self, predictions, actual_returns, target_annual_vol=0.10, cost_per_unit=0.005):
-    #     """
-    #     Proper implementation of factor-based strategy returns with volatility targeting and transaction cost penalty
-    #     """
-    #     predictions = np.asarray(predictions)
-    #     actual_returns = np.asarray(actual_returns)
-
-    #     # Method 1: Market Neutral (Volatility Targeted)
-    #     ranks = stats.rankdata(predictions)
-    #     n = len(ranks)
-    #     weights = (ranks - (n + 1) / 2) / (n / 2)  # Normalize to [-1, 1]
-
-    #     gross_returns = weights * actual_returns
-
-    #     # Compute daily volatility and scale to target annualized vol
-    #     daily_vol = np.std(gross_returns)
-    #     if daily_vol > 1e-8:
-    #         target_daily_vol = target_annual_vol / np.sqrt(252)
-    #         leverage = target_daily_vol / daily_vol
-    #     else:
-    #         leverage = 1.0
-
-    #     weights *= leverage
-    #     gross_returns = weights * actual_returns
-
-    #     # Compute turnover cost
-    #     turnover_cost = np.zeros_like(weights)
-    #     turnover_cost[1:] = cost_per_unit * np.abs(weights[1:] - weights[:-1])
-    #     net_returns = gross_returns - turnover_cost
-
-    #     # Method 2: Quintile Long-Short (unchanged)
-    #     try:
-    #         quintiles = pd.qcut(predictions, q=5, labels=False, duplicates='drop')
-    #         quintile_returns = np.zeros_like(actual_returns)
-    #         if len(np.unique(quintiles)) >= 2:
-    #             top_quintile = quintiles == np.max(quintiles)
-    #             bottom_quintile = quintiles == np.min(quintiles)
-    #             quintile_returns[top_quintile] = actual_returns[top_quintile]
-    #             quintile_returns[bottom_quintile] = -actual_returns[bottom_quintile]
-    #     except:
-    #         quintile_returns = np.zeros_like(actual_returns)
-
-    #     # Method 3: Percentile-based Long-Short (unchanged)
-    #     p_high = np.percentile(predictions, 80)
-    #     p_low = np.percentile(predictions, 20)
-    #     percentile_returns = np.zeros_like(actual_returns)
-    #     long_mask = predictions >= p_high
-    #     short_mask = predictions <= p_low
-    #     percentile_returns[long_mask] = actual_returns[long_mask]
-    #     percentile_returns[short_mask] = -actual_returns[short_mask]
-
-    #     return {
-    #         'market_neutral': net_returns,
-    #         'gross_returns': gross_returns,
-    #         'turnover': turnover_cost,
-    #         'leverage': leverage,
-    #         'quintile_long_short': quintile_returns,
-    #         'percentile_long_short': percentile_returns
-    #     }
-
+   
     
     def calculate_proper_sharpe(self,strategy_returns):
         """
@@ -336,7 +263,9 @@ class AlphaFactorAnalysis:
             
             
             # Generate factors
-            factors_df = self.generate_technical_factors(data)
+            factors_df = data
+            # factors_df = self.generate_technical_factors(data)
+            # print("factors_df.columns", factors_df.columns)
             factors_df = self.calculate_forward_returns(factors_df, periods=[target_period])
             
             # Get factor columns
@@ -348,7 +277,7 @@ class AlphaFactorAnalysis:
             
             # Clean data - remove rows with any NaN in factors or target
             clean_data = factors_df[factor_columns + [target_col]].dropna()
-            
+            # print("clean_data.columns", clean_data.columns)
             if len(clean_data) < 200:  # Need sufficient data
                 print(f"  Insufficient clean data for {symbol}: {len(clean_data)} rows")
                 continue
@@ -363,7 +292,8 @@ class AlphaFactorAnalysis:
                 if factor_name in clean_data.columns:
                     factor_series = clean_data[factor_name]
                     target_series = clean_data[target_col]
-                    
+                    # print("factor_name",factor_name)
+                    # print("factor_series",factor_series)
                     # Skip if factor has no variation
                     if factor_series.std() < 1e-10:
                         continue
@@ -496,7 +426,18 @@ if __name__ == "__main__":
     symbols = get_sp500_symbols(top_n=3)
     
     # Fetch market data
-    market_data = fetch_market_data(symbols, start_date='2020-01-01')
+    # market_data = fetch_market_data(symbols, start_date='2020-01-01')
+    market_data = {}
+    for symbol in symbols:
+        try:
+            ds = FactorDataset(symbol)
+            # df = ds.get_full()
+            df = ds.get_factors()
+            # print("COLS: ", df.columns)
+            market_data[symbol] = df
+            print(f"Loaded {symbol} from feather with {len(df)} rows")
+        except Exception as e:
+            print(f"Failed to load {symbol}: {e}")
     
     if len(market_data) == 0:
         print("No market data was successfully fetched.")
